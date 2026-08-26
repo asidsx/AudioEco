@@ -30,7 +30,7 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Setup Node.js
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -49,73 +49,77 @@ jobs:
           fi
           npx @capacitor/cli sync android
 
-      - name: Configure Android Project
+      - name: Configure Android Project for Modern OS (Android 14/15/16/17)
         run: |
           python3 -c "
           import os
 
-          # Update variables.gradle to modern Android SDK
-          if os.path.exists('android/variables.gradle'):
-              with open('android/variables.gradle', 'r') as f:
+          # 1. Update variables.gradle (minSdkVersion 24 is mandatory for Android 14+)
+          var_path = 'android/variables.gradle'
+          if os.path.exists(var_path):
+              with open(var_path, 'r') as f:
                   content = f.read()
+              content = content.replace('minSdkVersion = 22', 'minSdkVersion = 24')
+              content = content.replace('minSdkVersion = 21', 'minSdkVersion = 24')
               content = content.replace('compileSdkVersion = 34', 'compileSdkVersion = 35')
               content = content.replace('targetSdkVersion = 34', 'targetSdkVersion = 35')
-              with open('android/variables.gradle', 'w') as f:
+              with open(var_path, 'w') as f:
                   f.write(content)
+              print('Updated variables.gradle')
 
-          # Update build.gradle application ID
-          if os.path.exists('android/app/build.gradle'):
-              with open('android/app/build.gradle', 'r') as f:
-                  bg = f.read()
-              bg = bg.replace('applicationId \"com.example.app\"', 'applicationId \"org.audioeco.app\"')
-              with open('android/app/build.gradle', 'w') as f:
-                  f.write(bg)
+          # 2. Update gradle.properties to disable testOnly injection
+          prop_path = 'android/gradle.properties'
+          if os.path.exists(prop_path):
+              with open(prop_path, 'a') as f:
+                  f.write('\nandroid.injected.testOnly=false\n')
+          else:
+              with open(prop_path, 'w') as f:
+                  f.write('android.injected.testOnly=false\n')
+          print('Configured gradle.properties')
 
-          # Ensure AndroidManifest.xml has correct flags
+          # 3. Ensure AndroidManifest.xml has valid exported activity and extractNativeLibs
           manifest_path = 'android/app/src/main/AndroidManifest.xml'
           if os.path.exists(manifest_path):
               with open(manifest_path, 'r') as f:
                   m_content = f.read()
-              m_content = m_content.replace('package=\"com.example.app\"', 'package=\"org.audioeco.app\"')
               if 'android:extractNativeLibs' not in m_content:
                   m_content = m_content.replace('<application', '<application\n        android:extractNativeLibs=\"true\"')
               with open(manifest_path, 'w') as f:
                   f.write(m_content)
+              print('Configured AndroidManifest.xml')
           "
 
-      - name: Build Android APKs with Gradle
+      - name: Build Android Release APK with Gradle
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon || ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon -Pandroid.injected.testOnly=false
 
-      - name: Sign and Align APKs with uber-apk-signer (v1 + v2 + v3 + v4 Schemes)
+      - name: Sign Release APK with uber-apk-signer (v1 + v2 + v3 + v4 Schemes)
         run: |
           curl -L -o uber-apk-signer.jar https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar
           mkdir -p release-apks
 
-          # Find raw compiled APKs
-          RAW_APKS=$(find android/app/build/outputs/apk -name "*.apk")
-          echo "Found source APKs to sign:"
-          echo "$RAW_APKS"
+          # Locate strictly the Release APK output
+          RELEASE_APK=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [ -z "$RELEASE_APK" ]; then
+            RELEASE_APK=$(find android/app/build/outputs/apk -name "*release*.apk" | head -n 1)
+          fi
+          echo "Targeting Release APK for signing: $RELEASE_APK"
 
-          for apk in $RAW_APKS; do
-            java -jar uber-apk-signer.jar -a "$apk" --out release-apks --allowResign --verbose
-          done
+          java -jar uber-apk-signer.jar -a "$RELEASE_APK" --out release-apks --allowResign --verbose
 
           cd release-apks
-
-          # Select signed APK
           SIGNED_FILE=$(find . -maxdepth 1 -name "*-aligned-signed.apk" | head -n 1)
           if [ -z "$SIGNED_FILE" ]; then
             SIGNED_FILE=$(find . -maxdepth 1 -name "*.apk" | head -n 1)
           fi
 
-          echo "Selected signed APK: $SIGNED_FILE"
+          echo "Final Signed Release APK: $SIGNED_FILE"
           cp -f "$SIGNED_FILE" AudioECO.apk
           cp -f "$SIGNED_FILE" AudioECO-Signed.apk
 
-          ls -la
+          ls -lh
 
       - name: Upload Signed APK to Release
         uses: softprops/action-gh-release@v2

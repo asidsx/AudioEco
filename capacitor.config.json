@@ -1,5 +1,5 @@
 {
-  "appId": "com.audioeco.audiobookplayer",
+  "appId": "org.audioeco.app",
   "appName": "AudioECO",
   "webDir": "dist",
   "server": {
