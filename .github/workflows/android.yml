@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build and Sign Android APK
 
 on:
   push:
@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Android APK
+    name: Build & Sign Android APK (v1, v2, v3, v4)
     runs-on: ubuntu-latest
 
     steps:
@@ -28,15 +28,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci || npm install
+        run: |
+          npm install --no-audit --prefer-offline || npm install
 
       - name: Build Web Assets
         run: npm run build
 
-      - name: Setup Java JDK
+      - name: Setup Java JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
@@ -45,27 +45,84 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Add Android Platform with Capacitor
+      - name: Initialize Capacitor Android Platform
         run: |
-          npx cap add android || true
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
           npx cap sync android
 
-      - name: Build Debug APK
+      - name: Patch Gradle Dependencies Resolution
+        run: |
+          echo -e "\nconfigurations.all {\n    resolutionStrategy {\n        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22'\n        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22'\n    }\n}" >> android/app/build.gradle
+
+      - name: Build Android Release APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace
+          ./gradlew assembleRelease --stacktrace
 
-      - name: Upload Artifact
+      - name: Generate Release Keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore release.keystore \
+            -alias audioeco_key \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass "audioeco_secure_pass" \
+            -keypass "audioeco_secure_pass" \
+            -dname "CN=AudioECO, OU=Mobile, O=AudioECO, L=Earth, ST=State, C=US"
+
+      - name: Align and Sign APK with v1, v2, v3, and v4 Schemes
+        run: |
+          # Locate Android build tools (apksigner & zipalign)
+          BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -n 1)
+          echo "Using Android Build Tools from: $BUILD_TOOLS_DIR"
+
+          RAW_APK="android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          if [ ! -f "$RAW_APK" ]; then
+            RAW_APK=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          fi
+          echo "Found source APK: $RAW_APK"
+
+          # 1. 4-byte boundary Alignment
+          $BUILD_TOOLS_DIR/zipalign -v -p 4 "$RAW_APK" "AudioECO-aligned.apk"
+
+          # 2. Sign with v1, v2, v3, v4 signature schemes
+          $BUILD_TOOLS_DIR/apksigner sign \
+            --ks release.keystore \
+            --ks-pass pass:audioeco_secure_pass \
+            --key-pass pass:audioeco_secure_pass \
+            --ks-key-alias audioeco_key \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --v4-signing-enabled true \
+            --out "AudioECO.apk" \
+            "AudioECO-aligned.apk"
+
+          # 3. Verify signature schemes
+          echo "=== APK SIGNATURE VERIFICATION ==="
+          $BUILD_TOOLS_DIR/apksigner verify --verbose "AudioECO.apk"
+          echo "=================================="
+
+          cp AudioECO.apk AudioECO-Signed.apk
+
+      - name: Upload Signed APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AudioECO-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: AudioECO-Signed-APK
+          path: |
+            AudioECO.apk
+            AudioECO-Signed.apk
 
-      - name: Attach APK to GitHub Release
+      - name: Attach Signed APK to GitHub Release
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: android/app/build/outputs/apk/debug/app-debug.apk
+          files: |
+            AudioECO.apk
+            AudioECO-Signed.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
