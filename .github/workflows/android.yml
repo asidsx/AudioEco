@@ -114,8 +114,8 @@ jobs:
                       keyPassword 'audioeco_secure_pass'
                       v1SigningEnabled true
                       v2SigningEnabled true
-                      v3SigningEnabled true
-                      v4SigningEnabled true
+                      enableV3Signing = true
+                      enableV4Signing = true
                   }
               }
           '''
