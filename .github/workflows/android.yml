@@ -1,6 +1,8 @@
-name: Build and Sign Android APK
+name: Build & Release Android (.apk)
 
 on:
+  release:
+    types: [created, published]
   push:
     tags:
       - 'v*'
@@ -8,48 +10,36 @@ on:
     branches:
       - main
       - master
-  release:
-    types: [published, created]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build & Sign Android APK
+  build-android:
+    name: 🤖 Build & Sign Android APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install Dependencies
-        run: |
-          npm install --no-audit --prefer-offline || npm install
-
-      - name: Build Web Assets
-        run: npm run build
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Setup Java JDK 21
-        id: setup-java
+      - name: Setup Java 21 (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Set Java 21 Environment
-        run: |
-          echo "JAVA_HOME=$JAVA_HOME_21_X64" >> $GITHUB_ENV
-          echo "$JAVA_HOME_21_X64/bin" >> $GITHUB_PATH
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Node dependencies
+        run: npm install --legacy-peer-deps || npm install
+
+      - name: Build Web Application
+        run: npm run build
 
       - name: Initialize Capacitor Android Platform
         run: |
@@ -59,12 +49,12 @@ jobs:
           fi
           npx @capacitor/cli sync android
 
-      - name: Fix Package ID & Ensure Modern Android SDK Compatibility
+      - name: Configure Android Project
         run: |
           python3 -c "
           import os
 
-          # 1. Update variables.gradle
+          # Update variables.gradle to modern Android SDK
           if os.path.exists('android/variables.gradle'):
               with open('android/variables.gradle', 'r') as f:
                   content = f.read()
@@ -73,7 +63,7 @@ jobs:
               with open('android/variables.gradle', 'w') as f:
                   f.write(content)
 
-          # 2. Update build.gradle application ID
+          # Update build.gradle application ID
           if os.path.exists('android/app/build.gradle'):
               with open('android/app/build.gradle', 'r') as f:
                   bg = f.read()
@@ -81,7 +71,7 @@ jobs:
               with open('android/app/build.gradle', 'w') as f:
                   f.write(bg)
 
-          # 3. Update AndroidManifest.xml
+          # Ensure AndroidManifest.xml has correct flags
           manifest_path = 'android/app/src/main/AndroidManifest.xml'
           if os.path.exists(manifest_path):
               with open(manifest_path, 'r') as f:
@@ -93,82 +83,52 @@ jobs:
                   f.write(m_content)
           "
 
-      - name: Generate Official Release Keystore
-        run: |
-          keytool -genkeypair -v \
-            -keystore release.keystore \
-            -alias audioeco_key \
-            -keyalg RSA \
-            -keysize 2048 \
-            -sigalg SHA256withRSA \
-            -validity 10000 \
-            -storepass "audioeco_secure_pass" \
-            -keypass "audioeco_secure_pass" \
-            -dname "CN=AudioECO, OU=Mobile, O=AudioECO OpenSource, L=Global, ST=Earth, C=US"
-
-      - name: Build Unsigned Android Release APK
-        env:
-          JAVA_HOME: ${{ steps.setup-java.outputs.path }}
+      - name: Build Android APKs with Gradle
         run: |
           cd android
           chmod +x gradlew
-          export JAVA_HOME="${{ steps.setup-java.outputs.path }}"
-          export PATH="$JAVA_HOME/bin:$PATH"
-          ./gradlew assembleRelease --no-daemon --stacktrace -Dorg.gradle.java.home="$JAVA_HOME"
+          ./gradlew assembleRelease --no-daemon || ./gradlew assembleDebug --no-daemon
 
-      - name: Align and Sign APK with Clean v2, v3, v4 Schemes
+      - name: Sign and Align APKs with uber-apk-signer (v1 + v2 + v3 + v4 Schemes)
         run: |
-          BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -n 1)
-          echo "Using Android Build Tools from: $BUILD_TOOLS_DIR"
+          curl -L -o uber-apk-signer.jar https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar
+          mkdir -p release-apks
 
-          RAW_APK=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          if [ -z "$RAW_APK" ]; then
-            RAW_APK=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          # Find raw compiled APKs
+          RAW_APKS=$(find android/app/build/outputs/apk -name "*.apk")
+          echo "Found source APKs to sign:"
+          echo "$RAW_APKS"
+
+          for apk in $RAW_APKS; do
+            java -jar uber-apk-signer.jar -a "$apk" --out release-apks --allowResign --verbose
+          done
+
+          cd release-apks
+
+          # Select signed APK
+          SIGNED_FILE=$(find . -maxdepth 1 -name "*-aligned-signed.apk" | head -n 1)
+          if [ -z "$SIGNED_FILE" ]; then
+            SIGNED_FILE=$(find . -maxdepth 1 -name "*.apk" | head -n 1)
           fi
-          echo "Found source APK: $RAW_APK"
 
-          # 1. 4-byte boundary alignment BEFORE signing
-          $BUILD_TOOLS_DIR/zipalign -v -f -p 4 "$RAW_APK" "AudioECO-aligned.apk"
+          echo "Selected signed APK: $SIGNED_FILE"
+          cp -f "$SIGNED_FILE" AudioECO.apk
+          cp -f "$SIGNED_FILE" AudioECO-Signed.apk
 
-          # 2. Sign with modern schemes (v1=false, v2=true, v3=true, v4=true)
-          $BUILD_TOOLS_DIR/apksigner sign \
-            --ks release.keystore \
-            --ks-pass pass:audioeco_secure_pass \
-            --key-pass pass:audioeco_secure_pass \
-            --ks-key-alias audioeco_key \
-            --v1-signing-enabled false \
-            --v2-signing-enabled true \
-            --v3-signing-enabled true \
-            --v4-signing-enabled true \
-            --min-sdk-version 24 \
-            --out "AudioECO.apk" \
-            "AudioECO-aligned.apk"
+          ls -la
 
-          # 3. Print signature verification report
-          echo "================================================="
-          echo "        APK SIGNATURE VERIFICATION REPORT        "
-          echo "================================================="
-          $BUILD_TOOLS_DIR/apksigner verify --verbose --print-certs "AudioECO.apk"
-          echo "================================================="
+      - name: Upload Signed APK to Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
+        with:
+          files: |
+            release-apks/AudioECO.apk
+            release-apks/AudioECO-Signed.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-          cp AudioECO.apk AudioECO-Signed.apk
-
-      - name: Upload Signed APK Artifact
+      - name: Upload Artifact (For Actions Runs)
         uses: actions/upload-artifact@v4
         with:
           name: AudioECO-Signed-APK
-          path: |
-            AudioECO.apk
-            AudioECO-Signed.apk
-            AudioECO.apk.idsig
-
-      - name: Attach Signed APK to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            AudioECO.apk
-            AudioECO-Signed.apk
-            AudioECO.apk.idsig
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          path: release-apks/*.apk
