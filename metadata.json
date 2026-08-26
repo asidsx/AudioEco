@@ -1,0 +1,6 @@
+{
+  "name": "AudioECO",
+  "description": "Port of the high-fidelity PyQt5 audiobook player to Android (optimized mobile web). Supports custom books scanning, multiple narrators/versions, precise absolute offsets timeline, chapters, history tracking, and sleep timers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

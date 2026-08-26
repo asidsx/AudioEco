@@ -1,0 +1,8 @@
+{
+  "appId": "com.audioeco.audiobookplayer",
+  "appName": "AudioECO",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}
