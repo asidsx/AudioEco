@@ -3,10 +3,13 @@ name: Build Android App
 on:
   push:
     branches: [ main, master ]
+    tags:
+      - 'v*'
+      - '*'
   pull_request:
     branches: [ main, master ]
   release:
-    types: [ published ]
+    types: [ published, created ]
   workflow_dispatch:
 
 jobs:
@@ -73,12 +76,12 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
 
       - name: Rename APK for Release
-        if: github.event_name == 'release'
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
         run: |
           cp android/app/build/outputs/apk/debug/app-debug.apk android/app/build/outputs/apk/debug/AudioECO.apk
 
       - name: Upload APK to GitHub Release
-        if: github.event_name == 'release'
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: android/app/build/outputs/apk/debug/AudioECO.apk
