@@ -47,10 +47,11 @@ jobs:
 
       - name: Initialize Capacitor Android Platform
         run: |
+          npm install @capacitor/core @capacitor/cli @capacitor/android --no-audit
           if [ ! -d "android" ]; then
-            npx cap add android
+            npx @capacitor/cli add android
           fi
-          npx cap sync android
+          npx @capacitor/cli sync android
 
       - name: Patch Gradle Dependencies Resolution
         run: |
