@@ -36,14 +36,23 @@ jobs:
       - name: Build Web Assets
         run: npm run build
 
-      - name: Setup Java JDK 17
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Java JDK 21
+        id: setup-java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Set Java 21 Environment
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME_21_X64" >> $GITHUB_ENV
+          echo "$JAVA_HOME_21_X64/bin" >> $GITHUB_PATH
+          echo "Using Java version:"
+          $JAVA_HOME_21_X64/bin/java -version
+          $JAVA_HOME_21_X64/bin/javac -version
 
       - name: Initialize Capacitor Android Platform
         run: |
@@ -53,20 +62,14 @@ jobs:
           fi
           npx @capacitor/cli sync android
 
-      - name: Configure Java 17 Compatibility in Gradle
-        run: |
-          # Ensure Java 17 compatibility across Android modules
-          if [ -f "android/variables.gradle" ]; then
-            sed -i 's/JavaVersion.VERSION_21/JavaVersion.VERSION_17/g' android/variables.gradle || true
-          fi
-          if [ -f "android/app/build.gradle" ]; then
-            sed -i 's/JavaVersion.VERSION_21/JavaVersion.VERSION_17/g' android/app/build.gradle || true
-          fi
-
       - name: Build Android APK with Gradle
+        env:
+          JAVA_HOME: ${{ steps.setup-java.outputs.path }}
         run: |
           cd android
           chmod +x gradlew
+          export JAVA_HOME="${{ steps.setup-java.outputs.path }}"
+          export PATH="$JAVA_HOME/bin:$PATH"
           ./gradlew assembleRelease --no-daemon --stacktrace -Dorg.gradle.java.home="$JAVA_HOME" || ./gradlew assembleDebug --no-daemon --stacktrace -Dorg.gradle.java.home="$JAVA_HOME"
 
       - name: Generate Release Keystore
@@ -86,7 +89,7 @@ jobs:
           BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -n 1)
           echo "Using Android Build Tools from: $BUILD_TOOLS_DIR"
 
-          # Find generated APK
+          # Find compiled APK
           RAW_APK=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
           echo "Found source APK to sign: $RAW_APK"
 
