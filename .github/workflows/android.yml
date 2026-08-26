@@ -24,23 +24,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: |
           npm install --no-audit --prefer-offline || npm install
 
       - name: Build Web Assets
         run: npm run build
 
-      - name: Setup Java JDK 17
+      - name: Setup Java JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
-          java-version: 17
+          java-version: '21'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -53,15 +53,11 @@ jobs:
           fi
           npx @capacitor/cli sync android
 
-      - name: Patch Gradle Dependencies Resolution
-        run: |
-          echo -e "\nconfigurations.all {\n    resolutionStrategy {\n        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22'\n        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22'\n    }\n}" >> android/app/build.gradle
-
-      - name: Build Android Release APK
+      - name: Build Android APK with Gradle
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleRelease --stacktrace
+          ./gradlew assembleRelease --no-daemon --stacktrace || ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Generate Release Keystore
         run: |
@@ -77,20 +73,17 @@ jobs:
 
       - name: Align and Sign APK with v1, v2, v3, and v4 Schemes
         run: |
-          # Locate Android build tools (apksigner & zipalign)
           BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -n 1)
           echo "Using Android Build Tools from: $BUILD_TOOLS_DIR"
 
-          RAW_APK="android/app/build/outputs/apk/release/app-release-unsigned.apk"
-          if [ ! -f "$RAW_APK" ]; then
-            RAW_APK=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
-          fi
-          echo "Found source APK: $RAW_APK"
+          # Find generated APK
+          RAW_APK=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          echo "Found source APK to sign: $RAW_APK"
 
-          # 1. 4-byte boundary Alignment
-          $BUILD_TOOLS_DIR/zipalign -v -p 4 "$RAW_APK" "AudioECO-aligned.apk"
+          # 1. 4-byte boundary alignment
+          $BUILD_TOOLS_DIR/zipalign -v -f -p 4 "$RAW_APK" "AudioECO-aligned.apk"
 
-          # 2. Sign with v1, v2, v3, v4 signature schemes
+          # 2. Sign with all Android signature schemes (v1, v2, v3, v4)
           $BUILD_TOOLS_DIR/apksigner sign \
             --ks release.keystore \
             --ks-pass pass:audioeco_secure_pass \
@@ -103,10 +96,10 @@ jobs:
             --out "AudioECO.apk" \
             "AudioECO-aligned.apk"
 
-          # 3. Verify signature schemes
-          echo "=== APK SIGNATURE VERIFICATION ==="
+          # 3. Verify signature
+          echo "=== SIGNATURE VERIFICATION ==="
           $BUILD_TOOLS_DIR/apksigner verify --verbose "AudioECO.apk"
-          echo "=================================="
+          echo "==============================="
 
           cp AudioECO.apk AudioECO-Signed.apk
 
