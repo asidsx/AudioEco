@@ -2,7 +2,7 @@ import os
 import sys
 
 def configure_android():
-    print("Configuring Android project for Pixel / Android 14+ background audio playback...")
+    print("Configuring Android project for Pixel / Android 14+ background audio playback and lockscreen media controls...")
 
     # 1. Update variables.gradle
     var_path = 'android/variables.gradle'
@@ -27,7 +27,19 @@ def configure_android():
             f.write('android.injected.testOnly=false\n')
     print("Configured android/gradle.properties")
 
-    # 3. Add Foreground Audio Service Java Class
+    # 3. Add AndroidX Media dependencies to app/build.gradle
+    build_gradle_path = 'android/app/build.gradle'
+    if os.path.exists(build_gradle_path):
+        with open(build_gradle_path, 'r', encoding='utf-8') as f:
+            bg_content = f.read()
+        if 'androidx.media:media:' not in bg_content:
+            dep_block = "dependencies {\n    implementation 'androidx.media:media:1.7.0'"
+            bg_content = bg_content.replace("dependencies {", dep_block)
+            with open(build_gradle_path, 'w', encoding='utf-8') as f:
+                f.write(bg_content)
+            print("Added androidx.media dependency to app/build.gradle")
+
+    # 4. Add Full MediaSession Foreground Audio Service Java Class
     java_dir = 'android/app/src/main/java/org/audioeco/app'
     os.makedirs(java_dir, exist_ok=True)
 
@@ -42,18 +54,41 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.graphics.Bitmap;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.support.v4.media.MediaMetadataCompat;
+import android.support.v4.media.session.MediaSessionCompat;
+import android.support.v4.media.session.PlaybackStateCompat;
 import androidx.core.app.NotificationCompat;
+import androidx.media.app.NotificationCompat.MediaStyle;
 
 public class AudioForegroundService extends Service {
     public static final String CHANNEL_ID = "audioeco_playback_channel";
     public static final int NOTIFICATION_ID = 1001;
+
     public static final String ACTION_START = "ACTION_START";
     public static final String ACTION_STOP = "ACTION_STOP";
+    public static final String ACTION_UPDATE_STATE = "ACTION_UPDATE_STATE";
+    public static final String ACTION_REWIND_10 = "ACTION_REWIND_10";
+    public static final String ACTION_FAST_FORWARD_10 = "ACTION_FAST_FORWARD_10";
+    public static final String ACTION_TOGGLE_PLAY = "ACTION_TOGGLE_PLAY";
+
+    public static final String EXTRA_TITLE = "EXTRA_TITLE";
+    public static final String EXTRA_ARTIST = "EXTRA_ARTIST";
+    public static final String EXTRA_IS_PLAYING = "EXTRA_IS_PLAYING";
+    public static final String EXTRA_POSITION_MS = "EXTRA_POSITION_MS";
+    public static final String EXTRA_DURATION_MS = "EXTRA_DURATION_MS";
 
     private PowerManager.WakeLock wakeLock;
+    private MediaSessionCompat mediaSession;
+
+    private String currentTitle = "Аудиокнига";
+    private String currentArtist = "AudioECO";
+    private boolean isPlaying = false;
+    private long currentPositionMs = 0;
+    private long currentDurationMs = 0;
 
     @Override
     public void onCreate() {
@@ -68,23 +103,109 @@ public class AudioForegroundService extends Service {
             );
             wakeLock.setReferenceCounted(false);
         }
+
+        initMediaSession();
+    }
+
+    private void initMediaSession() {
+        mediaSession = new MediaSessionCompat(this, "AudioECO_MediaSession");
+        mediaSession.setFlags(
+            MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS |
+            MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
+        );
+
+        mediaSession.setCallback(new MediaSessionCompat.Callback() {
+            @Override
+            public void onPlay() {
+                sendControlEvent("toggle");
+            }
+
+            @Override
+            public void onPause() {
+                sendControlEvent("toggle");
+            }
+
+            @Override
+            public void onRewind() {
+                sendControlEvent("rewind_10");
+            }
+
+            @Override
+            public void onFastForward() {
+                sendControlEvent("forward_10");
+            }
+
+            @Override
+            public void onCustomAction(String action, android.os.Bundle extras) {
+                if ("REWIND_10".equals(action)) {
+                    sendControlEvent("rewind_10");
+                } else if ("FORWARD_10".equals(action)) {
+                    sendControlEvent("forward_10");
+                }
+            }
+        });
+
+        mediaSession.setActive(true);
+    }
+
+    private void sendControlEvent(String actionType) {
+        if (MainActivity.getInstance() != null) {
+            MainActivity.getInstance().dispatchAudioAction(actionType);
+        }
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+        if (intent == null) return START_STICKY;
+
+        String action = intent.getAction();
+
+        if (ACTION_STOP.equals(action)) {
             if (wakeLock != null && wakeLock.isHeld()) {
                 wakeLock.release();
+            }
+            if (mediaSession != null) {
+                mediaSession.setActive(false);
             }
             stopForeground(STOP_FOREGROUND_REMOVE);
             stopSelf();
             return START_NOT_STICKY;
         }
 
-        if (wakeLock != null && !wakeLock.isHeld()) {
-            wakeLock.acquire();
+        if (ACTION_REWIND_10.equals(action)) {
+            sendControlEvent("rewind_10");
+            return START_STICKY;
         }
 
+        if (ACTION_FAST_FORWARD_10.equals(action)) {
+            sendControlEvent("forward_10");
+            return START_STICKY;
+        }
+
+        if (ACTION_TOGGLE_PLAY.equals(action)) {
+            sendControlEvent("toggle");
+            return START_STICKY;
+        }
+
+        if (ACTION_UPDATE_STATE.equals(action) || ACTION_START.equals(action)) {
+            if (intent.hasExtra(EXTRA_TITLE)) currentTitle = intent.getStringExtra(EXTRA_TITLE);
+            if (intent.hasExtra(EXTRA_ARTIST)) currentArtist = intent.getStringExtra(EXTRA_ARTIST);
+            if (intent.hasExtra(EXTRA_IS_PLAYING)) isPlaying = intent.getBooleanExtra(EXTRA_IS_PLAYING, isPlaying);
+            if (intent.hasExtra(EXTRA_POSITION_MS)) currentPositionMs = intent.getLongExtra(EXTRA_POSITION_MS, currentPositionMs);
+            if (intent.hasExtra(EXTRA_DURATION_MS)) currentDurationMs = intent.getLongExtra(EXTRA_DURATION_MS, currentDurationMs);
+        }
+
+        if (isPlaying) {
+            if (wakeLock != null && !wakeLock.isHeld()) {
+                wakeLock.acquire();
+            }
+        } else {
+            if (wakeLock != null && wakeLock.isHeld()) {
+                wakeLock.release();
+            }
+        }
+
+        updatePlaybackState();
         Notification notification = buildNotification();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -100,36 +221,102 @@ public class AudioForegroundService extends Service {
         return START_STICKY;
     }
 
+    private void updatePlaybackState() {
+        if (mediaSession == null) return;
+
+        long actions = PlaybackStateCompat.ACTION_PLAY |
+                       PlaybackStateCompat.ACTION_PAUSE |
+                       PlaybackStateCompat.ACTION_PLAY_PAUSE |
+                       PlaybackStateCompat.ACTION_REWIND |
+                       PlaybackStateCompat.ACTION_FAST_FORWARD;
+
+        int state = isPlaying ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED;
+
+        PlaybackStateCompat.Builder stateBuilder = new PlaybackStateCompat.Builder()
+            .setActions(actions)
+            .setState(state, currentPositionMs, isPlaying ? 1.0f : 0.0f);
+
+        mediaSession.setPlaybackState(stateBuilder.build());
+
+        MediaMetadataCompat.Builder metaBuilder = new MediaMetadataCompat.Builder()
+            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, currentTitle)
+            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, currentArtist)
+            .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, "AudioECO")
+            .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, currentDurationMs);
+
+        mediaSession.setMetadata(metaBuilder.build());
+    }
+
     private Notification buildNotification() {
         Intent notificationIntent = new Intent(this, MainActivity.class);
         notificationIntent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        PendingIntent pendingIntent = PendingIntent.getActivity(
+        PendingIntent contentIntent = PendingIntent.getActivity(
             this, 0, notificationIntent,
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
                 ? PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
                 : PendingIntent.FLAG_UPDATE_CURRENT
         );
 
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("AudioECO")
-            .setContentText("Фоновое воспроизведение активно")
+        // Action: -10s
+        Intent rewindIntent = new Intent(this, AudioForegroundService.class);
+        rewindIntent.setAction(ACTION_REWIND_10);
+        PendingIntent pRewind = PendingIntent.getService(
+            this, 1, rewindIntent,
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0
+        );
+
+        // Action: Play / Pause
+        Intent toggleIntent = new Intent(this, AudioForegroundService.class);
+        toggleIntent.setAction(ACTION_TOGGLE_PLAY);
+        PendingIntent pToggle = PendingIntent.getService(
+            this, 2, toggleIntent,
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0
+        );
+
+        // Action: +10s
+        Intent forwardIntent = new Intent(this, AudioForegroundService.class);
+        forwardIntent.setAction(ACTION_FAST_FORWARD_10);
+        PendingIntent pForward = PendingIntent.getService(
+            this, 3, forwardIntent,
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0
+        );
+
+        int playPauseIcon = isPlaying ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play;
+        String playPauseTitle = isPlaying ? "Пауза" : "Воспроизведение";
+
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(currentTitle)
+            .setContentText(currentArtist)
+            .setSubText("AudioECO")
             .setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentIntent(pendingIntent)
-            .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .build();
+            .setContentIntent(contentIntent)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setOngoing(isPlaying)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            // 3 Control buttons: [-10s] [Play/Pause] [+10s]
+            .addAction(android.R.drawable.ic_media_rew, "-10с", pRewind)
+            .addAction(playPauseIcon, playPauseTitle, pToggle)
+            .addAction(android.R.drawable.ic_media_ff, "+10с", pForward)
+            .setStyle(new MediaStyle()
+                .setMediaSession(mediaSession.getSessionToken())
+                .setShowActionsInCompactView(0, 1, 2)
+                .setShowCancelButton(true)
+                .setCancelButtonIntent(pToggle));
+
+        return builder.build();
     }
 
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
-                "AudioECO Playback Service",
+                "Управление воспроизведением AudioECO",
                 NotificationManager.IMPORTANCE_LOW
             );
-            channel.setDescription("Удерживает воспроизведение аудио в фоне и при выключенном экране");
+            channel.setDescription("Элементы управления аудиокнигой на экране блокировки и в шторке");
             channel.setShowBadge(false);
+            channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (manager != null) {
                 manager.createNotificationChannel(channel);
@@ -142,6 +329,9 @@ public class AudioForegroundService extends Service {
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
         }
+        if (mediaSession != null) {
+            mediaSession.release();
+        }
         super.onDestroy();
     }
 
@@ -153,9 +343,9 @@ public class AudioForegroundService extends Service {
 '''
     with open(service_path, 'w', encoding='utf-8') as f:
         f.write(service_code)
-    print("Created AudioForegroundService.java")
+    print("Created AudioForegroundService.java with LockScreen MediaStyle controls [-10s, Play/Pause, +10s]")
 
-    # 4. Patch MainActivity.java
+    # 5. Patch MainActivity.java
     main_act_path = os.path.join(java_dir, 'MainActivity.java')
     main_activity_code = '''package org.audioeco.app;
 
@@ -164,6 +354,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import androidx.core.app.ActivityCompat;
@@ -171,31 +362,24 @@ import androidx.core.content.ContextCompat;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
+    private static MainActivity instance;
+
+    public static MainActivity getInstance() {
+        return instance;
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        instance = this;
 
-        // Request notification permissions for Android 13+
+        // Request notification permissions for Android 13+ (Pixel 8a, Android 14/15/16/17)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                     != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(this,
                         new String[]{Manifest.permission.POST_NOTIFICATIONS}, 101);
             }
-        }
-
-        // Start Foreground Audio Service to prevent Pixel / Android OS from freezing audio
-        try {
-            Intent serviceIntent = new Intent(this, AudioForegroundService.class);
-            serviceIntent.setAction(AudioForegroundService.ACTION_START);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent);
-            } else {
-                startService(serviceIntent);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
         }
 
         // Configure WebView for continuous media playback without user-gesture requirements
@@ -206,30 +390,80 @@ public class MainActivity extends BridgeActivity {
                 settings.setMediaPlaybackRequiresUserGesture(false);
                 settings.setDomStorageEnabled(true);
                 settings.setDatabaseEnabled(true);
+
+                // Add Javascript Bridge for 2-way native sync
+                webView.addJavascriptInterface(new AudioBridgeInterface(), "AndroidNativeAudio");
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
+    public void dispatchAudioAction(final String actionType) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (bridge != null && bridge.getWebView() != null) {
+                        bridge.getWebView().evaluateJavascript(
+                            "window.__onNativeAudioAction && window.__onNativeAudioAction('" + actionType + "');",
+                            null
+                        );
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        });
+    }
+
+    public class AudioBridgeInterface {
+        @JavascriptInterface
+        public void updatePlayback(String title, String artist, boolean isPlaying, long positionMs, long durationMs) {
+            try {
+                Intent serviceIntent = new Intent(MainActivity.this, AudioForegroundService.class);
+                serviceIntent.setAction(AudioForegroundService.ACTION_UPDATE_STATE);
+                serviceIntent.putExtra(AudioForegroundService.EXTRA_TITLE, title);
+                serviceIntent.putExtra(AudioForegroundService.EXTRA_ARTIST, artist);
+                serviceIntent.putExtra(AudioForegroundService.EXTRA_IS_PLAYING, isPlaying);
+                serviceIntent.putExtra(AudioForegroundService.EXTRA_POSITION_MS, positionMs);
+                serviceIntent.putExtra(AudioForegroundService.EXTRA_DURATION_MS, durationMs);
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(serviceIntent);
+                } else {
+                    startService(serviceIntent);
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
     @Override
     public void onPause() {
-        // Do NOT pause WebView timers or audio engine when app is in background or screen is off
+        // Do NOT pause WebView timers or audio engine when app is in background or screen is locked
         super.onPause();
     }
 
     @Override
     public void onStop() {
-        // Keep foreground service and audio threads active
+        // Keep foreground service and audio active
         super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        instance = null;
+        super.onDestroy();
     }
 }
 '''
     with open(main_act_path, 'w', encoding='utf-8') as f:
         f.write(main_activity_code)
-    print("Configured MainActivity.java with Foreground Audio Service launcher")
+    print("Configured MainActivity.java with 2-way Native AudioBridge")
 
-    # 5. Patch AndroidManifest.xml
+    # 6. Patch AndroidManifest.xml
     manifest_path = 'android/app/src/main/AndroidManifest.xml'
     if os.path.exists(manifest_path):
         with open(manifest_path, 'r', encoding='utf-8') as f:

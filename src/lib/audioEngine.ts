@@ -177,6 +177,19 @@ class AudiobookAudioEngine {
 
     // Setup Media Session locks
     this.setupMediaSessionHandlers();
+
+    // Hook Native Android Lockscreen Control Bridge
+    if (typeof window !== 'undefined') {
+      (window as any).__onNativeAudioAction = (action: string) => {
+        if (action === 'toggle') {
+          this.togglePlay();
+        } else if (action === 'rewind_10') {
+          this.seekRelative(-10000);
+        } else if (action === 'forward_10') {
+          this.seekRelative(10000);
+        }
+      };
+    }
   }
 
   // Subscriptions
@@ -636,29 +649,56 @@ class AudiobookAudioEngine {
   }
 
   private updateMediaSessionPlaybackState() {
-    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
-    try {
-      navigator.mediaSession.playbackState = this.isPlaying ? 'playing' : 'paused';
-    } catch {}
+    if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+      try {
+        navigator.mediaSession.playbackState = this.isPlaying ? 'playing' : 'paused';
+      } catch {}
+    }
+
+    // Sync to Android Lockscreen Foreground Service
+    this.syncToAndroidNativeService();
   }
 
   private updateMediaSessionPositionState(positionMs: number) {
-    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
-    if (!('setPositionState' in navigator.mediaSession)) return;
+    if (typeof navigator !== 'undefined' && 'mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
+      try {
+        const activeFile = this.files[this.currentFileIndex];
+        const durationSec = activeFile ? activeFile.durationMs / 1000 : this.globalDurationMs / 1000;
+        const positionSec = Math.min(this.currentLocalPosition / 1000, durationSec);
 
-    try {
-      const activeFile = this.files[this.currentFileIndex];
-      const durationSec = activeFile ? activeFile.durationMs / 1000 : this.globalDurationMs / 1000;
-      const positionSec = Math.min(this.currentLocalPosition / 1000, durationSec);
+        if (durationSec > 0 && !isNaN(positionSec)) {
+          navigator.mediaSession.setPositionState({
+            duration: durationSec,
+            playbackRate: this.playbackRate,
+            position: Math.max(0, positionSec),
+          });
+        }
+      } catch {}
+    }
 
-      if (durationSec > 0 && !isNaN(positionSec)) {
-        navigator.mediaSession.setPositionState({
-          duration: durationSec,
-          playbackRate: this.playbackRate,
-          position: Math.max(0, positionSec),
-        });
+    // Sync to Android Lockscreen Foreground Service
+    this.syncToAndroidNativeService();
+  }
+
+  private syncToAndroidNativeService() {
+    if (typeof window !== 'undefined' && (window as any).AndroidNativeAudio) {
+      try {
+        const title = this.currentChapterTitle || this.currentBookTitle || 'Аудиокнига';
+        const artist = this.currentNarrator || 'AudioECO';
+        const activeFile = this.files[this.currentFileIndex];
+        const durationMs = activeFile ? activeFile.durationMs : this.globalDurationMs;
+        
+        (window as any).AndroidNativeAudio.updatePlayback(
+          title,
+          artist,
+          this.isPlaying,
+          this.currentLocalPosition,
+          durationMs
+        );
+      } catch (e) {
+        console.warn('[AUDIO] AndroidNativeAudio sync failed:', e);
       }
-    } catch {}
+    }
   }
 }
 
