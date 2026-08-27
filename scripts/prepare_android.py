@@ -54,8 +54,8 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
-import android.graphics.Bitmap;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.support.v4.media.MediaMetadataCompat;
@@ -74,6 +74,8 @@ public class AudioForegroundService extends Service {
     public static final String ACTION_REWIND_10 = "ACTION_REWIND_10";
     public static final String ACTION_FAST_FORWARD_10 = "ACTION_FAST_FORWARD_10";
     public static final String ACTION_TOGGLE_PLAY = "ACTION_TOGGLE_PLAY";
+    public static final String ACTION_PLAY = "ACTION_PLAY";
+    public static final String ACTION_PAUSE = "ACTION_PAUSE";
 
     public static final String EXTRA_TITLE = "EXTRA_TITLE";
     public static final String EXTRA_ARTIST = "EXTRA_ARTIST";
@@ -117,35 +119,92 @@ public class AudioForegroundService extends Service {
         mediaSession.setCallback(new MediaSessionCompat.Callback() {
             @Override
             public void onPlay() {
-                sendControlEvent("toggle");
+                handlePlay();
             }
 
             @Override
             public void onPause() {
-                sendControlEvent("toggle");
+                handlePause();
             }
 
             @Override
             public void onRewind() {
-                sendControlEvent("rewind_10");
+                handleRewind();
             }
 
             @Override
             public void onFastForward() {
-                sendControlEvent("forward_10");
+                handleFastForward();
             }
 
             @Override
-            public void onCustomAction(String action, android.os.Bundle extras) {
-                if ("REWIND_10".equals(action)) {
-                    sendControlEvent("rewind_10");
-                } else if ("FORWARD_10".equals(action)) {
-                    sendControlEvent("forward_10");
+            public void onSkipToPrevious() {
+                handleRewind();
+            }
+
+            @Override
+            public void onSkipToNext() {
+                handleFastForward();
+            }
+
+            @Override
+            public void onCustomAction(String action, Bundle extras) {
+                if ("ACTION_REWIND_10".equals(action) || "REWIND_10".equals(action)) {
+                    handleRewind();
+                } else if ("ACTION_FAST_FORWARD_10".equals(action) || "FORWARD_10".equals(action)) {
+                    handleFastForward();
                 }
+            }
+
+            @Override
+            public void onSeekTo(long pos) {
+                currentPositionMs = pos;
+                updatePlaybackState();
+                sendControlEvent("seek:" + pos);
             }
         });
 
         mediaSession.setActive(true);
+    }
+
+    private void handleTogglePlay() {
+        if (isPlaying) {
+            handlePause();
+        } else {
+            handlePlay();
+        }
+    }
+
+    private void handlePlay() {
+        isPlaying = true;
+        if (wakeLock != null && !wakeLock.isHeld()) {
+            wakeLock.acquire();
+        }
+        updatePlaybackState();
+        updateNotification();
+        sendControlEvent("play");
+    }
+
+    private void handlePause() {
+        isPlaying = false;
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+        }
+        updatePlaybackState();
+        updateNotification();
+        sendControlEvent("pause");
+    }
+
+    private void handleRewind() {
+        currentPositionMs = Math.max(0, currentPositionMs - 10000);
+        updatePlaybackState();
+        sendControlEvent("rewind_10");
+    }
+
+    private void handleFastForward() {
+        currentPositionMs = Math.min(currentDurationMs > 0 ? currentDurationMs : Long.MAX_VALUE, currentPositionMs + 10000);
+        updatePlaybackState();
+        sendControlEvent("forward_10");
     }
 
     private void sendControlEvent(String actionType) {
@@ -173,17 +232,27 @@ public class AudioForegroundService extends Service {
         }
 
         if (ACTION_REWIND_10.equals(action)) {
-            sendControlEvent("rewind_10");
+            handleRewind();
             return START_STICKY;
         }
 
         if (ACTION_FAST_FORWARD_10.equals(action)) {
-            sendControlEvent("forward_10");
+            handleFastForward();
             return START_STICKY;
         }
 
         if (ACTION_TOGGLE_PLAY.equals(action)) {
-            sendControlEvent("toggle");
+            handleTogglePlay();
+            return START_STICKY;
+        }
+
+        if (ACTION_PLAY.equals(action)) {
+            handlePlay();
+            return START_STICKY;
+        }
+
+        if (ACTION_PAUSE.equals(action)) {
+            handlePause();
             return START_STICKY;
         }
 
@@ -206,17 +275,7 @@ public class AudioForegroundService extends Service {
         }
 
         updatePlaybackState();
-        Notification notification = buildNotification();
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            );
-        } else {
-            startForeground(NOTIFICATION_ID, notification);
-        }
+        updateNotification();
 
         return START_STICKY;
     }
@@ -228,12 +287,25 @@ public class AudioForegroundService extends Service {
                        PlaybackStateCompat.ACTION_PAUSE |
                        PlaybackStateCompat.ACTION_PLAY_PAUSE |
                        PlaybackStateCompat.ACTION_REWIND |
-                       PlaybackStateCompat.ACTION_FAST_FORWARD;
+                       PlaybackStateCompat.ACTION_FAST_FORWARD |
+                       PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS |
+                       PlaybackStateCompat.ACTION_SKIP_TO_NEXT |
+                       PlaybackStateCompat.ACTION_SEEK_TO;
 
         int state = isPlaying ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED;
 
+        PlaybackStateCompat.CustomAction rewindAction = new PlaybackStateCompat.CustomAction.Builder(
+            "ACTION_REWIND_10", "-10с", android.R.drawable.ic_media_rew
+        ).build();
+
+        PlaybackStateCompat.CustomAction forwardAction = new PlaybackStateCompat.CustomAction.Builder(
+            "ACTION_FAST_FORWARD_10", "+10с", android.R.drawable.ic_media_ff
+        ).build();
+
         PlaybackStateCompat.Builder stateBuilder = new PlaybackStateCompat.Builder()
             .setActions(actions)
+            .addCustomAction(rewindAction)
+            .addCustomAction(forwardAction)
             .setState(state, currentPositionMs, isPlaying ? 1.0f : 0.0f);
 
         mediaSession.setPlaybackState(stateBuilder.build());
@@ -245,6 +317,20 @@ public class AudioForegroundService extends Service {
             .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, currentDurationMs);
 
         mediaSession.setMetadata(metaBuilder.build());
+    }
+
+    private void updateNotification() {
+        Notification notification = buildNotification();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            );
+        } else {
+            startForeground(NOTIFICATION_ID, notification);
+        }
     }
 
     private Notification buildNotification() {
@@ -262,7 +348,9 @@ public class AudioForegroundService extends Service {
         rewindIntent.setAction(ACTION_REWIND_10);
         PendingIntent pRewind = PendingIntent.getService(
             this, 1, rewindIntent,
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                ? PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
+                : PendingIntent.FLAG_UPDATE_CURRENT
         );
 
         // Action: Play / Pause
@@ -270,7 +358,9 @@ public class AudioForegroundService extends Service {
         toggleIntent.setAction(ACTION_TOGGLE_PLAY);
         PendingIntent pToggle = PendingIntent.getService(
             this, 2, toggleIntent,
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                ? PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
+                : PendingIntent.FLAG_UPDATE_CURRENT
         );
 
         // Action: +10s
@@ -278,7 +368,9 @@ public class AudioForegroundService extends Service {
         forwardIntent.setAction(ACTION_FAST_FORWARD_10);
         PendingIntent pForward = PendingIntent.getService(
             this, 3, forwardIntent,
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+                ? PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
+                : PendingIntent.FLAG_UPDATE_CURRENT
         );
 
         int playPauseIcon = isPlaying ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play;
@@ -294,7 +386,7 @@ public class AudioForegroundService extends Service {
             .setOngoing(isPlaying)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
-            // 3 Control buttons: [-10s] [Play/Pause] [+10s]
+            // Three control buttons: [-10s] [Play/Pause] [+10s]
             .addAction(android.R.drawable.ic_media_rew, "-10с", pRewind)
             .addAction(playPauseIcon, playPauseTitle, pToggle)
             .addAction(android.R.drawable.ic_media_ff, "+10с", pForward)
@@ -382,7 +474,7 @@ public class MainActivity extends BridgeActivity {
             }
         }
 
-        // Configure WebView for continuous media playback without user-gesture requirements
+        // Configure WebView for continuous media playback and immediate JS execution
         try {
             if (this.bridge != null && this.bridge.getWebView() != null) {
                 WebView webView = this.bridge.getWebView();
@@ -390,6 +482,7 @@ public class MainActivity extends BridgeActivity {
                 settings.setMediaPlaybackRequiresUserGesture(false);
                 settings.setDomStorageEnabled(true);
                 settings.setDatabaseEnabled(true);
+                settings.setJavaScriptEnabled(true);
 
                 // Add Javascript Bridge for 2-way native sync
                 webView.addJavascriptInterface(new AudioBridgeInterface(), "AndroidNativeAudio");
@@ -405,10 +498,10 @@ public class MainActivity extends BridgeActivity {
             public void run() {
                 try {
                     if (bridge != null && bridge.getWebView() != null) {
-                        bridge.getWebView().evaluateJavascript(
-                            "window.__onNativeAudioAction && window.__onNativeAudioAction('" + actionType + "');",
-                            null
-                        );
+                        WebView webView = bridge.getWebView();
+                        webView.resumeTimers();
+                        String script = "try { if (window.__onNativeAudioAction) { window.__onNativeAudioAction('" + actionType + "'); } } catch(e) {}";
+                        webView.evaluateJavascript(script, null);
                     }
                 } catch (Exception e) {
                     e.printStackTrace();
@@ -442,14 +535,27 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onPause() {
-        // Do NOT pause WebView timers or audio engine when app is in background or screen is locked
         super.onPause();
+        // Prevent Chromium from freezing JS evaluation and timers in background
+        if (this.bridge != null && this.bridge.getWebView() != null) {
+            this.bridge.getWebView().resumeTimers();
+        }
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        if (this.bridge != null && this.bridge.getWebView() != null) {
+            this.bridge.getWebView().resumeTimers();
+        }
     }
 
     @Override
     public void onStop() {
-        // Keep foreground service and audio active
         super.onStop();
+        if (this.bridge != null && this.bridge.getWebView() != null) {
+            this.bridge.getWebView().resumeTimers();
+        }
     }
 
     @Override

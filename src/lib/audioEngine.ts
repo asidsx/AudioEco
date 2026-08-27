@@ -181,12 +181,25 @@ class AudiobookAudioEngine {
     // Hook Native Android Lockscreen Control Bridge
     if (typeof window !== 'undefined') {
       (window as any).__onNativeAudioAction = (action: string) => {
-        if (action === 'toggle') {
-          this.togglePlay();
-        } else if (action === 'rewind_10') {
-          this.seekRelative(-10000);
-        } else if (action === 'forward_10') {
-          this.seekRelative(10000);
+        try {
+          if (action === 'toggle') {
+            this.togglePlay();
+          } else if (action === 'play') {
+            this.play();
+          } else if (action === 'pause') {
+            this.pause();
+          } else if (action === 'rewind_10') {
+            this.seekRelative(-10000);
+          } else if (action === 'forward_10') {
+            this.seekRelative(10000);
+          } else if (typeof action === 'string' && action.startsWith('seek:')) {
+            const pos = parseInt(action.split(':')[1], 10);
+            if (!isNaN(pos)) {
+              this.setGlobalPosition(pos);
+            }
+          }
+        } catch (err) {
+          console.warn('[AUDIO] Native audio action execution error:', err);
         }
       };
     }
