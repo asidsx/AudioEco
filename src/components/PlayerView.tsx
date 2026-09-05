@@ -20,6 +20,7 @@ import {
   Moon,
   ArrowUp,
   ArrowDown,
+  Trash2,
   VolumeX,
   Languages,
 } from 'lucide-react';
@@ -68,6 +69,7 @@ export default function PlayerView({ bookId, bookTitle, onGoBack, language, onCh
   // Dialog Launches
   const [showChapters, setShowChapters] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [confirmDeleteFileId, setConfirmDeleteFileId] = useState<number | null>(null);
 
   // Renaming book metadata states
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -411,6 +413,55 @@ export default function PlayerView({ bookId, bookTitle, onGoBack, language, onCh
     // Reload files list in PlayerEngine offsets
     await audioEngine.loadVersion(bookId, activeVersionId, activeFileId, activeLocalPos);
     setFiles(audioEngine.files);
+  };
+
+  const handleDeleteFile = async (e: React.MouseEvent, fileId: number, fileIndex: number) => {
+    e.stopPropagation();
+
+    if (confirmDeleteFileId === fileId) {
+      setConfirmDeleteFileId(null);
+      try {
+        await db.deleteFile(fileId);
+
+        const remainingFiles = files.filter((f) => f.id !== fileId);
+        const mapped = remainingFiles.map((f, i) => ({ id: f.id, orderIndex: i }));
+        if (mapped.length > 0) {
+          await db.updateFileOrder(mapped);
+        }
+
+        const isCurrentlyPlayingThisFile = fileIndex === currentFileIndex;
+        let newFileId: number | undefined = undefined;
+        let newPos = 0;
+
+        if (remainingFiles.length > 0) {
+          if (isCurrentlyPlayingThisFile) {
+            const nextIdx = Math.min(fileIndex, remainingFiles.length - 1);
+            newFileId = remainingFiles[nextIdx].id;
+          } else {
+            const activeFile = files[currentFileIndex];
+            if (activeFile && activeFile.id !== fileId) {
+              newFileId = activeFile.id;
+              newPos = Math.max(0, positionMs - (audioEngine.fileStartOffsets[currentFileIndex] || 0));
+            }
+          }
+
+          await audioEngine.loadVersion(bookId, activeVersionId, newFileId, newPos);
+          setFiles(audioEngine.files);
+          setChapters(audioEngine.chapters);
+        } else {
+          audioEngine.pause();
+          setFiles([]);
+          setChapters([]);
+        }
+      } catch (err) {
+        console.error('[PLAYER] Failed to delete file:', err);
+      }
+    } else {
+      setConfirmDeleteFileId(fileId);
+      setTimeout(() => {
+        setConfirmDeleteFileId((prev) => (prev === fileId ? null : prev));
+      }, 4000);
+    }
   };
 
   const handlePlaylistPartClick = (index: number) => {
@@ -777,14 +828,14 @@ export default function PlayerView({ bookId, bookTitle, onGoBack, language, onCh
                       {formatTime(item.durationMs)}
                     </span>
 
-                    {/* Move Sequence buttons */}
+                    {/* Move Sequence & Delete buttons */}
                     <div className="flex items-center gap-0.5 border-l border-slate-800/80 pl-1.5">
                       <button
                         id={`move-up-${index}`}
                         disabled={index === 0}
                         onClick={() => handleMoveFileOrder(index, 'up')}
                         className="rounded hover:bg-slate-950 p-1 text-slate-500 hover:text-slate-300 disabled:opacity-20 cursor-pointer transition-colors"
-                        title="Move sequence order up"
+                        title={t.moveUpTooltip}
                       >
                         <ArrowUp className="h-3 w-3" />
                       </button>
@@ -793,9 +844,25 @@ export default function PlayerView({ bookId, bookTitle, onGoBack, language, onCh
                         disabled={index === files.length - 1}
                         onClick={() => handleMoveFileOrder(index, 'down')}
                         className="rounded hover:bg-slate-950 p-1 text-slate-500 hover:text-slate-300 disabled:opacity-20 cursor-pointer transition-colors"
-                        title="Move sequence order down"
+                        title={t.moveDownTooltip}
                       >
                         <ArrowDown className="h-3 w-3" />
+                      </button>
+                      <button
+                        id={`delete-file-${index}`}
+                        onClick={(e) => handleDeleteFile(e, item.id, index)}
+                        className={`rounded p-1 transition-all cursor-pointer ml-1 ${
+                          confirmDeleteFileId === item.id
+                            ? 'bg-rose-500/20 text-rose-400 font-bold text-[9px] px-1.5 animate-pulse border border-rose-500/40'
+                            : 'text-slate-500 hover:text-rose-400 hover:bg-slate-950'
+                        }`}
+                        title={confirmDeleteFileId === item.id ? t.deleteFileConfirmTooltip : t.deleteFileTooltip}
+                      >
+                        {confirmDeleteFileId === item.id ? (
+                          <span>{t.deleteBtn}</span>
+                        ) : (
+                          <Trash2 className="h-3 w-3" />
+                        )}
                       </button>
                     </div>
                   </div>

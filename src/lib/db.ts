@@ -151,6 +151,26 @@ class AudiobookDatabase {
     });
   }
 
+  async deleteFile(id: number): Promise<void> {
+    const db = await this.init();
+    const fileStore = await this.getStore('files', 'readwrite');
+    await new Promise<void>((resolve) => {
+      const req = fileStore.delete(id);
+      req.onsuccess = () => resolve();
+      req.onerror = () => resolve();
+    });
+
+    const chapterStore = await this.getStore('chapters', 'readwrite');
+    const index = chapterStore.index('fileId');
+    const selectReq = index.getAll(id);
+    selectReq.onsuccess = () => {
+      const existing = selectReq.result || [];
+      for (const item of existing) {
+        chapterStore.delete(item.id);
+      }
+    };
+  }
+
   async updateFileDuration(id: number, durationMs: number): Promise<void> {
     const store = await this.getStore('files', 'readwrite');
     const getReq = store.get(id);

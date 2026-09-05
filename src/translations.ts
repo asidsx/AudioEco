@@ -27,6 +27,8 @@ export interface TranslationKeys {
   customStream: string;
   deleteBookTooltip: string;
   deleteBookConfirmTooltip: string;
+  deleteFileTooltip: string;
+  deleteFileConfirmTooltip: string;
   deleteBtn: string;
   back: string;
   rename: string;
@@ -103,6 +105,8 @@ export const translations: Record<'en' | 'ru', TranslationKeys> = {
     customStream: 'CUSTOM_STREAM',
     deleteBookTooltip: 'Delete Audiobook',
     deleteBookConfirmTooltip: 'Click again to confirm removal',
+    deleteFileTooltip: 'Delete this file',
+    deleteFileConfirmTooltip: 'Click again to confirm file deletion',
     deleteBtn: 'Delete?',
     back: 'Back',
     rename: 'Rename',
@@ -177,6 +181,8 @@ export const translations: Record<'en' | 'ru', TranslationKeys> = {
     customStream: 'СВОЙ_ФАЙЛ',
     deleteBookTooltip: 'Удалить аудиокнигу',
     deleteBookConfirmTooltip: 'Нажмите еще раз для подтверждения удаления',
+    deleteFileTooltip: 'Удалить этот файл',
+    deleteFileConfirmTooltip: 'Нажмите еще раз для удаления файла',
     deleteBtn: 'Удалить?',
     back: 'Назад',
     rename: 'Переименовать',
